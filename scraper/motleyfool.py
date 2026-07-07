@@ -2,7 +2,6 @@ import requests
 import time
 import logging
 import os
-import re
 from datetime import datetime
 from bs4 import BeautifulSoup
 import psycopg2
@@ -14,13 +13,11 @@ load_dotenv(dotenv_path=r"C:\Users\Parzi\OneDrive\Documents\newparzival\earnings
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# SEC EDGAR CIK numbers for each company
 COMPANIES = [
     {"ticker": "GS",   "name": "Goldman Sachs",     "sector": "financials", "cik": "0000886982"},
-    {"ticker": "JPM",  "name": "JPMorgan Chase",     "sector": "financials", "cik": "0000070858"},
+    {"ticker": "JPM",  "name": "JPMorgan Chase",     "sector": "financials", "cik": "0000019617"},
     {"ticker": "MS",   "name": "Morgan Stanley",     "sector": "financials", "cik": "0000895421"},
-    {"ticker": "BAC", "name": "Bank of America", "sector": "financials", "cik": "0000070858"},
-    # {"ticker": "BAC",  "name": "Bank of America",    "sector": "financials", "cik": "0000070858"},
+    {"ticker": "BAC",  "name": "Bank of America",    "sector": "financials", "cik": "0000070858"},
     {"ticker": "C",    "name": "Citigroup",          "sector": "financials", "cik": "0000831001"},
     {"ticker": "AAPL", "name": "Apple",              "sector": "technology", "cik": "0000320193"},
     {"ticker": "MSFT", "name": "Microsoft",          "sector": "technology", "cik": "0000789019"},
@@ -39,7 +36,6 @@ COMPANIES = [
     {"ticker": "MRK",  "name": "Merck",              "sector": "healthcare", "cik": "0000310158"},
 ]
 
-# SEC requires a user-agent with contact info
 HEADERS = {
     "User-Agent": "earnings-anomaly-research kidusefrem2@gmail.com",
     "Accept": "application/json"
@@ -47,15 +43,11 @@ HEADERS = {
 
 
 def get_db_connection():
-    return psycopg2.connect(os.getenv("DATABASE_URL"))
+    return psycopg2.connect(os.getenv("DATABASE_URL"), connect_timeout=10)
 
 
 def get_earnings_transcripts(cik: str, ticker: str) -> list[dict]:
-    """
-    Fetch 8-K filings from SEC EDGAR that contain earnings call transcripts.
-    Earnings transcripts are filed as 8-K exhibit 99.1 or as DEFA14A.
-    We look for 8-K filings with 'earnings' in the description.
-    """
+    """Fetch recent 8-K filings from SEC EDGAR."""
     url = f"https://data.sec.gov/submissions/CIK{cik}.json"
 
     try:
@@ -67,14 +59,11 @@ def get_earnings_transcripts(cik: str, ticker: str) -> list[dict]:
         forms = filings.get("form", [])
         dates = filings.get("filingDate", [])
         accession_numbers = filings.get("accessionNumber", [])
-        descriptions = filings.get("primaryDocument", [])
 
         results = []
         for i, form in enumerate(forms):
-            # 8-K filings contain earnings call transcripts as exhibits
             if form == "8-K" and i < len(dates):
                 filing_date = dates[i]
-                # Only get filings from 2024 onwards
                 if filing_date < "2024-01-01":
                     continue
                 accession = accession_numbers[i].replace("-", "")
@@ -86,7 +75,6 @@ def get_earnings_transcripts(cik: str, ticker: str) -> list[dict]:
                 })
 
         logger.info(f"{ticker}: found {len(results)} 8-K filings since 2024")
-        # Return most recent 12
         return sorted(results, key=lambda x: x["date"], reverse=True)[:12]
 
     except Exception as e:
@@ -95,64 +83,86 @@ def get_earnings_transcripts(cik: str, ticker: str) -> list[dict]:
 
 
 def get_transcript_from_filing(filing: dict, ticker: str) -> dict | None:
-    """
-    Look inside an 8-K filing for the earnings call transcript exhibit.
-    """
+    """Check an 8-K filing for an earnings call transcript exhibit."""
     cik = filing["cik"]
     accession = filing["accession_clean"]
     accession_dashed = filing["accession"]
 
-    # Get the filing index to find exhibits
-    index_url = f"https://www.sec.gov/Archives/edgar/data/{int(cik)}/{accession}/{accession_dashed}-index.htm"
+    filing_index_url = f"https://www.sec.gov/Archives/edgar/data/{int(cik)}/{accession}/{accession_dashed}-index.htm"
 
     try:
-        resp = requests.get(index_url, headers={**HEADERS, "Accept": "text/html"}, timeout=10)
+        resp = requests.get(
+            filing_index_url,
+            headers={**HEADERS, "Accept": "text/html"},
+            timeout=10
+        )
         resp.raise_for_status()
         soup = BeautifulSoup(resp.text, "html.parser")
 
-        # Find exhibit 99.1 or transcript files
-        transcript_url = None
+        # Collect all .htm exhibit links
+        exhibit_links = []
         for row in soup.find_all("tr"):
-            cells = row.find_all("td")
-            if len(cells) >= 3:
-                description = cells[1].get_text(strip=True).lower() if len(cells) > 1 else ""
-                link = row.find("a", href=True)
-                if link and ("99.1" in description or "transcript" in description or "ex-99.1" in description.lower()):
-                    href = link["href"]
-                    transcript_url = f"https://www.sec.gov{href}" if href.startswith("/") else href
-                    break
+            link = row.find("a", href=True)
+            if not link:
+                continue
+            href = link["href"]
+            if href.endswith((".htm", ".html")) and "index" not in href.lower():
+                full_url = f"https://www.sec.gov{href}" if href.startswith("/") else href
+                exhibit_links.append(full_url)
 
-        if not transcript_url:
-            return None
+        # Check each exhibit for transcript signals
+        for url in exhibit_links[:8]:
+            try:
+                r = requests.get(
+                    url,
+                    headers={**HEADERS, "Accept": "text/html"},
+                    timeout=15
+                )
+                if r.status_code != 200:
+                    continue
 
-        # Fetch the actual transcript
-        resp2 = requests.get(transcript_url, headers={**HEADERS, "Accept": "text/html"}, timeout=15)
-        resp2.raise_for_status()
-        soup2 = BeautifulSoup(resp2.text, "html.parser")
-        raw_text = soup2.get_text(separator="\n", strip=True)
+                soup2 = BeautifulSoup(r.text, "html.parser")
+                text = soup2.get_text(separator="\n", strip=True)
 
-        # Check it's actually a transcript (should have Q&A section)
-        if "question" not in raw_text.lower() or len(raw_text) < 3000:
-            return None
+                has_qa = any(phrase in text.lower() for phrase in [
+                    "question-and-answer",
+                    "open for questions",
+                    "open the line for questions",
+                    "open the call for questions",
+                    "operator instructions",
+                    "our first question",
+                    "first question comes from",
+                    "take our first question",
+                ])
+                has_length = len(text) > 5000
+                has_speakers = text.count(":") > 20
 
-        try:
-            call_date = datetime.strptime(filing["date"], "%Y-%m-%d").date()
-        except Exception:
-            call_date = None
+                if has_qa and has_length and has_speakers:
+                    try:
+                        call_date = datetime.strptime(filing["date"], "%Y-%m-%d").date()
+                    except Exception:
+                        call_date = None
 
-        return {
-            "title": f"{ticker} Earnings Call {filing['date']}",
-            "date": call_date,
-            "raw_text": raw_text,
-            "source_url": transcript_url
-        }
+                    logger.info(f"{ticker}: found transcript at {url}")
+                    return {
+                        "title": f"{ticker} Earnings Call {filing['date']}",
+                        "date": call_date,
+                        "raw_text": text,
+                        "source_url": url
+                    }
+
+            except Exception:
+                continue
+
+        return None
 
     except Exception as e:
-        logger.debug(f"Failed to get transcript from {accession_dashed}: {e}")
+        logger.debug(f"Failed filing {accession_dashed}: {e}")
         return None
 
 
 def save_transcript(conn, company_id: int, transcript: dict):
+    """Save transcript to database, skip if already exists."""
     with conn.cursor() as cur:
         cur.execute(
             "SELECT id FROM transcripts WHERE source_url = %s",
@@ -178,11 +188,13 @@ def save_transcript(conn, company_id: int, transcript: dict):
 
 
 def ensure_company(conn, company: dict) -> int:
+    """Insert company if not exists, return its id."""
     with conn.cursor(cursor_factory=RealDictCursor) as cur:
         cur.execute("SELECT id FROM companies WHERE ticker = %s", (company["ticker"],))
         row = cur.fetchone()
         if row:
             return row["id"]
+
         cur.execute("""
             INSERT INTO companies (ticker, name, sector)
             VALUES (%s, %s, %s) RETURNING id
@@ -192,26 +204,30 @@ def ensure_company(conn, company: dict) -> int:
 
 
 def run_scraper():
-    conn = get_db_connection()
-    logger.info("Connected to database.")
-
+    # Reconnect per company to avoid Neon idle timeout
     for company in COMPANIES:
         logger.info(f"\n=== Scraping {company['ticker']} ===")
-        company_id = ensure_company(conn, company)
-        filings = get_earnings_transcripts(company["cik"], company["ticker"])
+        try:
+            conn = get_db_connection()
+            company_id = ensure_company(conn, company)
+            filings = get_earnings_transcripts(company["cik"], company["ticker"])
 
-        saved = 0
-        for filing in filings:
-            transcript = get_transcript_from_filing(filing, company["ticker"])
-            if transcript:
-                save_transcript(conn, company_id, transcript)
-                saved += 1
-            time.sleep(1)  # SEC rate limit: 10 requests/sec max
+            saved = 0
+            for filing in filings:
+                transcript = get_transcript_from_filing(filing, company["ticker"])
+                if transcript:
+                    save_transcript(conn, company_id, transcript)
+                    saved += 1
+                time.sleep(1)
 
-        logger.info(f"{company['ticker']}: saved {saved} transcripts")
+            logger.info(f"{company['ticker']}: saved {saved} transcripts")
+            conn.close()
+
+        except Exception as e:
+            logger.error(f"{company['ticker']}: failed — {e}")
+
         time.sleep(2)
 
-    conn.close()
     logger.info("\nScraping complete.")
 
 
