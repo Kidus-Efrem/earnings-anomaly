@@ -5,7 +5,10 @@ from bs4 import BeautifulSoup
 from datetime import datetime
 import psycopg2
 from psycopg2.extras import RealDictCursor
+import os
+from dotenv import load_dotenv
 
+load_dotenv()
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
@@ -42,44 +45,35 @@ HEADERS = {
 }
 
 def get_db_connection():
-    return psycopg2.connect(
-        host="localhost",
-        database="earnings_anomaly",
-        user="postgres",
-        password="yourpassword"
-    )
+    return psycopg2.connect(os.getenv("DATABASE_URL"))
 
 def search_transcripts(ticker: str) -> list[dict]:
     """
-    Search Motley Fool for transcript URLs for a given ticker.
-    Returns list of {url, date, title}
+    Scrape Motley Fool's transcript index for a given ticker.
     """
-    search_url = f"https://www.fool.com/search/solr.aspx?q={ticker}+earnings+call+transcript&filter=article"
+    url = f"https://www.fool.com/quote/nasdaq/{ticker.lower()}/#quote-earnings-transcripts"
+
+    # Try their direct transcript listing URL instead
+    url = f"https://www.fool.com/earnings-call-transcripts/?ticker={ticker}"
 
     try:
-        resp = requests.get(search_url, headers=HEADERS, timeout=10)
+        resp = requests.get(url, headers=HEADERS, timeout=10)
         resp.raise_for_status()
         soup = BeautifulSoup(resp.text, "html.parser")
 
         results = []
-        # Motley Fool search results are in article cards
-        for card in soup.select("div.search-result-item, article.search-result"):
-            link = card.select_one("a[href*='earnings-call-transcript']")
-            if not link:
-                continue
-
-            url = "https://www.fool.com" + link["href"] if link["href"].startswith("/") else link["href"]
-            title = link.get_text(strip=True)
-
-            results.append({"url": url, "title": title})
+        for a in soup.select("a[href*='earnings-call-transcript']"):
+            href = a["href"]
+            full_url = "https://www.fool.com" + href if href.startswith("/") else href
+            if full_url not in [r["url"] for r in results]:
+                results.append({"url": full_url, "title": a.get_text(strip=True)})
 
         logger.info(f"{ticker}: found {len(results)} transcript links")
-        return results[:12]  # last 12 quarters = 3 years
+        return results[:12]
 
     except Exception as e:
         logger.error(f"{ticker}: search failed — {e}")
         return []
-
 def scrape_transcript(url: str) -> dict | None:
     """
     Scrape a single transcript page.
