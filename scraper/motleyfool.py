@@ -47,42 +47,39 @@ HEADERS = {
     "User-Agent": "Mozilla/5.0 (research project)"
 }
 
-
-def get_db_connection():
-    return psycopg2.connect(os.getenv("DATABASE_URL"))
-
+# Replace your search_transcripts function and delete the TRANSCRIPT_URLS dictionary
 
 def search_transcripts(ticker: str) -> list[dict]:
     """
-    Search Motley Fool using their search page filtered by ticker.
+    Dynamically search Motley Fool for recent earnings transcripts of a given ticker.
     """
-    # Use the direct URL pattern we know works from the GS example
-    # https://www.fool.com/earnings/call-transcripts/2026/04/13/goldman-sachs-gs-q1-2026-earnings-transcript/
-    # Pattern: /earnings/call-transcripts/YYYY/MM/DD/{company}-{ticker}-{quarter}-earnings-transcript/
-
-    search_url = f"https://www.fool.com/search/#q={ticker}%20earnings%20call%20transcript&type=13"
+    logger.info(f"Searching Motley Fool for {ticker} transcripts...")
+    search_url = f"https://www.fool.com/search/solr-api/?q={ticker}+earnings+transcript&sort=date_desc"
 
     try:
-        resp = requests.get(search_url, headers=HEADERS, timeout=10)
+        resp = requests.get(search_url, headers=HEADERS, timeout=15)
         resp.raise_for_status()
-        soup = BeautifulSoup(resp.text, "html.parser")
+        data = resp.json()
 
         results = []
-        for a in soup.select("a[href*='earnings/call-transcripts']"):
-            href = a["href"]
-            # Only include links that contain the ticker in the URL
-            if f"-{ticker.lower()}-" not in href.lower():
-                continue
-            full_url = "https://www.fool.com" + href if href.startswith("/") else href
-            if full_url not in [r["url"] for r in results]:
-                results.append({"url": full_url, "title": a.get_text(strip=True)})
+        # Extract items from the search results
+        for doc in data.get("results", []):
+            url = doc.get("url", "")
+            title = doc.get("title", "")
 
-        logger.info(f"{ticker}: found {len(results)} transcript links")
-        return results[:12]
+            # Filter for actual earnings call transcripts paths
+            if "/earnings/call-transcripts/" in url:
+                results.append({"url": url, "title": title})
+
+        logger.info(f"Found {len(results)} dynamic transcript URLs for {ticker}")
+        return results
 
     except Exception as e:
-        logger.error(f"{ticker}: search failed — {e}")
+        logger.error(f"Dynamic search failed for {ticker}: {e}")
         return []
+
+def get_db_connection():
+    return psycopg2.connect(os.getenv("DATABASE_URL"))
 
 
 def scrape_transcript(url: str) -> dict | None:
