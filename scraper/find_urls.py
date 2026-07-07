@@ -1,78 +1,66 @@
-# save as scraper/find_urls.py
 import requests
+import json
 import time
 
-HEADERS = {"User-Agent": "Mozilla/5.0 (research project)"}
+def get_real_earnings_dates(ticker: str, email: str) -> list[str]:
+    """
+    Fetches official 8-K filing dates from the SEC EDGAR API,
+    filtering strictly for Item 2.02 (Results of Operations & Financial Condition).
+    """
+    # 1. Fetch the absolute up-to-date CIK mapping from the SEC
+    headers = {"User-Agent": f"ResearchInstance {email}"}
+    ticker_url = "https://sec.gov/files/company_tickers.json"
 
-COMPANIES = {
-    "GS": "goldman-sachs",
-    "JPM": "jpmorgan",
-    "MS": "morgan-stanley",
-    "BAC": "bank-of-america",
-    "C": "citigroup",
-    "AAPL": "apple",
-    "MSFT": "microsoft",
-    "GOOGL": "alphabet",
-    "META": "meta-platforms",
-    "ORCL": "oracle",
-    "XOM": "exxonmobil",
-    "CVX": "chevron",
-    "COP": "conocophillips",
-    "SLB": "slb",
-    "EOG": "eog-resources",
-    "JNJ": "johnson-johnson",
-    "UNH": "unitedhealth-group",
-    "PFE": "pfizer",
-    "ABBV": "abbvie",
-    "MRK": "merck",
-}
+    try:
+        ticker_resp = requests.get(ticker_url, headers=headers)
+        ticker_data = ticker_resp.json()
+    except Exception as e:
+        print(f"Failed to fetch ticker mappings: {e}")
+        return []
 
-# Approximate earnings dates — we'll try ±3 days around each
-QUARTERS = [
-    ("q1-2026", 2026, 4, 14),
-    ("q4-2025", 2026, 1, 15),
-    ("q3-2025", 2025, 10, 15),
-    ("q2-2025", 2025, 7, 16),
-    ("q1-2025", 2025, 4, 15),
-    ("q4-2024", 2025, 1, 15),
-    ("q3-2024", 2024, 10, 15),
-    ("q2-2024", 2024, 7, 15),
-]
+    # Find the matching CIK number for your target ticker
+    target_cik = None
+    for entry in ticker_data.values():
+        if entry['ticker'].upper() == ticker.upper():
+            # SEC requires CIKs to be 10 digits, padded with leading zeros
+            target_cik = str(entry['cik_str']).zfill(10)
+            break
 
+    if not target_cik:
+        print(f"Ticker {ticker} not found in SEC database.")
+        return []
 
-def find_url(company_slug, ticker, quarter_label, year, month, day):
-    from datetime import date, timedelta
-    suffixes = ["-earnings-transcript/", "-earnings-call-transcript/", "-earnings-call-transcrip/"]
-    for delta in range(-5, 6):
-        d = date(year, month, day) + timedelta(days=delta)
-        date_str = d.strftime("%Y/%m/%d")
-        for suffix in suffixes:
-            url = f"https://www.fool.com/earnings/call-transcripts/{date_str}/{company_slug}-{ticker.lower()}-{quarter_label}{suffix}"
-            try:
-                r = requests.get(url, headers=HEADERS, timeout=8, stream=True)
-                r.close()
-                if r.status_code == 200:
-                    print(f"✓ {ticker} {quarter_label}: {url}")
-                    return url
-            except Exception:
-                pass
-            time.sleep(0.5)
-    print(f"✗ {ticker} {quarter_label}: not found")
-    return None
-results = {}
-for ticker, slug in COMPANIES.items():
-    results[ticker] = []
-    for quarter_label, year, month, day in QUARTERS:
-        url = find_url(slug, ticker, quarter_label, year, month, day)
-        if url:
-            results[ticker].append(url)
-    time.sleep(2)
+    # 2. Query the submissions endpoint for this CIK
+    submissions_url = f"https://data.sec.gov/submissions/CIK{target_cik}.json"
 
-# Print as Python dict you can paste into motleyfool.py
-print("\n\nTRANSCRIPT_URLS = {")
-for ticker, urls in results.items():
-    print(f'    "{ticker}": [')
-    for url in urls:
-        print(f'        "{url}",')
-    print("    ],")
-print("}")
+    # Optional safety sleep to respect the SEC's 10 req/sec rule
+    time.sleep(0.1)
+
+    try:
+        resp = requests.get(submissions_url, headers=headers)
+        if resp.status_code != 200:
+            print(f"SEC API rejected query: Status {resp.status_code}")
+            return []
+
+        data = resp.json()
+        filings = data['filings']['recent']
+    except Exception as e:
+        print(f"Failed to parse data for CIK {target_cik}: {e}")
+        return []
+
+    earnings_dates = []
+
+    # 3. Zip and parse filing types, dates, and items fired
+    for form, date, items in zip(filings['form'], filings['filingDate'], filings['items']):
+        # We look for 8-K filings that explicitly contain '2.02' (Earnings Disclosures)
+        if form == '8-K' and '2.02' in str(items):
+            earnings_dates.append(date)
+
+    return sorted(list(set(earnings_dates)), reverse=True)
+
+# Example Usage:
+# Replace with your actual email string to comply with SEC rules
+my_email = "yourname@domain.com"
+goldman_dates = get_real_earnings_dates("GS", my_email)
+
+print(f"Verified Earnings Announcement Dates found: {goldman_dates[:5]}")
