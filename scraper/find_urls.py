@@ -39,25 +39,26 @@ QUARTERS = [
     ("q2-2024", 2024, 7, 15),
 ]
 
+
 def find_url(company_slug, ticker, quarter_label, year, month, day):
+    from datetime import date, timedelta
     suffixes = ["-earnings-transcript/", "-earnings-call-transcript/", "-earnings-call-transcrip/"]
-    for delta in range(-5, 6):  # try ±5 days
-        from datetime import date, timedelta
+    for delta in range(-5, 6):
         d = date(year, month, day) + timedelta(days=delta)
         date_str = d.strftime("%Y/%m/%d")
         for suffix in suffixes:
             url = f"https://www.fool.com/earnings/call-transcripts/{date_str}/{company_slug}-{ticker.lower()}-{quarter_label}{suffix}"
             try:
-                r = requests.head(url, headers=HEADERS, timeout=5, allow_redirects=True)
+                r = requests.get(url, headers=HEADERS, timeout=8, stream=True)
+                r.close()
                 if r.status_code == 200:
                     print(f"✓ {ticker} {quarter_label}: {url}")
                     return url
             except Exception:
                 pass
-            time.sleep(0.3)
+            time.sleep(0.5)
     print(f"✗ {ticker} {quarter_label}: not found")
     return None
-
 results = {}
 for ticker, slug in COMPANIES.items():
     results[ticker] = []
