@@ -8,6 +8,8 @@ from psycopg2.extras import RealDictCursor
 import re
 import os
 from dotenv import load_dotenv
+import feedparser
+import random
 
 # load_dotenv()
 load_dotenv()
@@ -47,36 +49,38 @@ HEADERS = {
     "User-Agent": "Mozilla/5.0 (research project)"
 }
 
-# Replace your search_transcripts function and delete the TRANSCRIPT_URLS dictionary
 
 def search_transcripts(ticker: str) -> list[dict]:
     """
-    Dynamically search Motley Fool for recent earnings transcripts of a given ticker.
+    Fetch recent transcripts via Motley Fool's public RSS feed
+    and filter for the requested ticker symbol.
     """
-    logger.info(f"Searching Motley Fool for {ticker} transcripts...")
-    search_url = f"https://www.fool.com/search/solr-api/?q={ticker}+earnings+transcript&sort=date_desc"
+    logger.info(f"Fetching transcripts for {ticker} from RSS feed...")
+    rss_url = "https://www.fool.com/legal/shopping/rss/earning-transcripts"
 
     try:
-        resp = requests.get(search_url, headers=HEADERS, timeout=15)
-        resp.raise_for_status()
-        data = resp.json()
+        # feedparser handles headers and extraction gracefully
+        feed = feedparser.parse(rss_url)
 
         results = []
-        # Extract items from the search results
-        for doc in data.get("results", []):
-            url = doc.get("url", "")
-            title = doc.get("title", "")
+        for entry in feed.entries:
+            title = entry.get("title", "")
+            url = entry.get("link", "")
 
-            # Filter for actual earnings call transcripts paths
-            if "/earnings/call-transcripts/" in url:
-                results.append({"url": url, "title": title})
+            # Match pattern like "Goldman Sachs (GS) Q2 2026 Earnings Call Transcript"
+            if f"({ticker})" in title and "/earnings/call-transcripts/" in url:
+                results.append({
+                    "url": url,
+                    "title": title
+                })
 
-        logger.info(f"Found {len(results)} dynamic transcript URLs for {ticker}")
+        logger.info(f"Found {len(results)} RSS matching transcripts for {ticker}")
         return results
 
     except Exception as e:
-        logger.error(f"Dynamic search failed for {ticker}: {e}")
+        logger.error(f"RSS fetch failed for {ticker}: {e}")
         return []
+
 
 def get_db_connection():
     return psycopg2.connect(os.getenv("DATABASE_URL"))
@@ -205,10 +209,14 @@ def run_scraper():
         transcript_links = search_transcripts(company["ticker"])
 
         for link in transcript_links:
+            logger.info(f"Processing: {link['url']}")
             transcript = scrape_transcript(link["url"])
             if transcript:
                 save_transcript(conn, company_id, transcript)
-            time.sleep(2)
+
+            # Random delay between 3 to 7 seconds between page scrapes to evade rate limits
+            jitter = random.uniform(3.0, 7.0)
+            time.sleep(jitter)
 
         time.sleep(5)
 
@@ -216,5 +224,7 @@ def run_scraper():
     logger.info("\nScraping complete.")
 
 
+
 if __name__ == "__main__":
     run_scraper()
+
