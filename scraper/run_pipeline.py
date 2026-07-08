@@ -2,12 +2,13 @@ import os
 import re
 import time
 import random
+import sqlite3
 import requests
 from datetime import datetime, timedelta
 from bs4 import BeautifulSoup
 
-# Direct relative imports from database component scripts
-from database import init_db, seed_mock_data, get_pending_jobs, update_job_status, save_transcript_content
+# Corrected direct relative imports from database component scripts
+from database import DB_PATH, init_db, get_pending_jobs, update_job_status, save_transcript_content
 
 FOOL_HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
@@ -24,6 +25,34 @@ TICKER_NAME_MAP = {
 
 # Globals managing in-memory cache lookups across large scale lists
 SITEMAP_CACHE = {}
+
+def update_market_time_of_day(ticker: str, target_date: str, text: str):
+    """
+    Scans the introductory text segments of a transcript to deduce whether the
+    earnings release happened Before Market Open (BMO) or After Market Close (AMC).
+    """
+    intro_snippet = text[:2500].lower()
+    time_of_day = "UNKNOWN"
+
+    bmo_signals = ["before the opening bell", "before market open", "morning call", "bmo", "prior to the market open"]
+    amc_signals = ["after the closing bell", "after market close", "evening call", "amc", "after the market closes"]
+
+    if any(sig in intro_snippet for sig in bmo_signals):
+        time_of_day = "BMO"
+    elif any(sig in intro_snippet for sig in amc_signals):
+        time_of_day = "AMC"
+
+    if time_of_day != "UNKNOWN":
+        conn = sqlite3.connect(DB_PATH)
+        cursor = conn.cursor()
+        cursor.execute("""
+            UPDATE earnings_calendar
+            SET time_of_day = ?
+            WHERE ticker = ? AND target_date = ?
+        """, (time_of_day, ticker, target_date))
+        conn.commit()
+        conn.close()
+        print(f"    [➔] Extracted market timing constraint alignment: {time_of_day}")
 
 def get_cached_sitemap(year_str: str, month_str: str) -> str | None:
     """Downloads monthly sitemap XML indexes and stores them in memory to prevent duplicate requests."""
@@ -127,7 +156,6 @@ def scale_pipeline_runner():
     print("=" * 70)
 
     init_db()
-    seed_mock_data() # Adds mock testing elements if table is freshly instantiated
 
     pending_jobs = get_pending_jobs()
     print(f"[#] Total Pending records found in catalog index ledger: {len(pending_jobs)}")
@@ -151,6 +179,9 @@ def scale_pipeline_runner():
                     save_transcript_content(ticker, target_date, text)
                     update_job_status(ticker, target_date, 'COMPLETED', url)
                     print(f"    [✓] Data block transaction stored safely. Size: {len(text)} characters.")
+
+                    # New feature: Parse text to deduce market alignment times automatically
+                    update_market_time_of_day(ticker, target_date, text)
                 else:
                     update_job_status(ticker, target_date, 'FAILED_PARSING', url)
                     print("    [!] Warning: Empty or abnormally small parsing text array payload gathered.")
