@@ -6,6 +6,7 @@ import sqlite3
 import requests
 from datetime import datetime, timedelta
 from bs4 import BeautifulSoup
+import traceback  # Add this to the imports at the top of your file
 
 # Corrected direct relative imports from database component scripts
 from database import DB_PATH, init_db, get_pending_jobs, update_job_status, save_transcript_content
@@ -54,47 +55,58 @@ def update_market_time_of_day(ticker: str, target_date: str, text: str):
         conn.close()
         print(f"    [➔] Extracted market timing constraint alignment: {time_of_day}")
 
-def get_cached_sitemap(year_str: str, month_str: str) -> str | None:
-    """Downloads monthly sitemap XML indexes and stores them in memory to prevent duplicate requests."""
+def get_cached_sitemap(year_str: str, month_str: str) -> str:
+    """Downloads monthly sitemap XML indexes and stores them safely in memory."""
     cache_key = f"{year_str}/{month_str}"
     if cache_key in SITEMAP_CACHE:
         return SITEMAP_CACHE[cache_key]
 
+    # Corrected target structure matching exact Motley Fool production indices
     archive_url = f"https://www.fool.com/sitemap/{year_str}/{month_str}"
     print(f"    [*] Fetching sitemap catalog for {cache_key}...")
 
     try:
         resp = requests.get(archive_url, headers=FOOL_HEADERS, timeout=15)
-        if resp.status_code == 200:
+        if resp.status_code == 200 and resp.text:
             SITEMAP_CACHE[cache_key] = resp.text
             return resp.text
         else:
+            # Fallback path if grouped under plural sitemaps path layout
+            fallback_url = f"https://www.fool.com/sitemaps/{year_str}/{month_str}"
+            resp_fb = requests.get(fallback_url, headers=FOOL_HEADERS, timeout=15)
+            if resp_fb.status_code == 200 and resp_fb.text:
+                SITEMAP_CACHE[cache_key] = resp_fb.text
+                return resp_fb.text
             print(f"    [!] Failed to pull map path index target. HTTP Status: {resp.status_code}")
     except Exception as e:
         print(f"    [!] Error caching sitemap {cache_key}: {type(e).__name__}")
+        print(traceback.format_exc())  # This will print out the exact line and cause
 
-    return None
-
+    return ""
 def find_url_scaled(ticker: str, target_date_str: str) -> str | None:
-    """Scans cached local maps to match the closest valid transcript URL location."""
+    """Scans cached local maps across primary and neighboring months to match valid transcripts."""
     ticker_lower = ticker.lower()
     date_obj = datetime.strptime(target_date_str, "%Y-%m-%d")
 
+    # 1. Gather the target month
     year_str = date_obj.strftime("%Y")
     month_str = date_obj.strftime("%m")
+    xml_content = str(get_cached_sitemap(year_str, month_str) or "")
 
-    xml_content = get_cached_sitemap(year_str, month_str)
+    # 2. Gather the subsequent month (Handles delayed reporting & cross-month alignment gaps)
+    next_month_obj = (date_obj.replace(day=28) + timedelta(days=5))
+    next_year_str = next_month_obj.strftime("%Y")
+    next_month_str = next_month_obj.strftime("%m")
+    xml_content += str(get_cached_sitemap(next_year_str, next_month_str) or "")
 
-    # Check the next month as well if the reporting date is near month end boundaries
-    if date_obj.day > 24:
-        next_m = date_obj + timedelta(days=10)
-        xml_content_next = get_cached_sitemap(next_m.strftime("%Y"), next_m.strftime("%m"))
-        if xml_content and xml_content_next:
-            xml_content += xml_content_next
-        elif xml_content_next:
-            xml_content = xml_content_next
+    # 3. Gather previous month if early in the month (Handles boundary adjustments)
+    if date_obj.day < 7:
+        prev_month_obj = date_obj - timedelta(days=10)
+        prev_year_str = prev_month_obj.strftime("%Y")
+        prev_month_str = prev_month_obj.strftime("%m")
+        xml_content += str(get_cached_sitemap(prev_year_str, prev_month_str) or "")
 
-    if not xml_content:
+    if not xml_content or len(xml_content.strip()) == 0:
         return None
 
     all_urls = re.findall(r"<loc>(.*?)</loc>", xml_content)
@@ -115,7 +127,8 @@ def find_url_scaled(ticker: str, target_date_str: str) -> str | None:
                 candidate_urls.append(url)
 
     best_url = None
-    smallest_delta = timedelta(days=21) # Matches across up to 3 weeks delay gaps
+    # INCREASED: Look window expanded to 45 days to capture companies with alternative fiscal calendars
+    smallest_delta = timedelta(days=45)
 
     for url in candidate_urls:
         date_match = re.search(r"/call-transcripts/(\d{4})/(\d{2})/(\d{2})/", url)
@@ -131,7 +144,6 @@ def find_url_scaled(ticker: str, target_date_str: str) -> str | None:
                 continue
 
     return best_url
-
 def download_and_parse_transcript(url: str) -> str | None:
     """Downloads individual document bodies and cleans the extracted text segments."""
     try:
@@ -180,7 +192,7 @@ def scale_pipeline_runner():
                     update_job_status(ticker, target_date, 'COMPLETED', url)
                     print(f"    [✓] Data block transaction stored safely. Size: {len(text)} characters.")
 
-                    # New feature: Parse text to deduce market alignment times automatically
+                    # Parse text to deduce market alignment times automatically
                     update_market_time_of_day(ticker, target_date, text)
                 else:
                     update_job_status(ticker, target_date, 'FAILED_PARSING', url)
