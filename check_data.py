@@ -24,7 +24,7 @@ def inspect_database():
         FROM earnings_calendar c
         JOIN transcripts_content t ON c.ticker = t.ticker AND c.target_date = t.target_date
         WHERE c.status = 'COMPLETED'
-        LIMIT 10
+        LIMIT 200
 
     """)
     rows = cursor.fetchall()
