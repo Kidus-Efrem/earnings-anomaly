@@ -20,12 +20,12 @@ def bulk_seed():
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
     seeded_count = 0
-    
+
     historical_windows = [
         ("Q1", 2026, "04", range(14, 28)),
         ("Q4", 2025, "01", range(18, 30))
     ]
-    
+
     for item in company_data:
         ticker = item["ticker"]
         cik = item["cik"]
@@ -37,7 +37,7 @@ def bulk_seed():
             """, (ticker, date_str, cik, quarter, year))
             if cursor.rowcount > 0:
                 seeded_count += 1
-                
+
     conn.commit()
     conn.close()
     print(f"[?] Seeding complete! Added {seeded_count} entries offline.")
