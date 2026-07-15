@@ -150,7 +150,7 @@ def download_and_parse_transcript(url: str) -> str | None:
     except Exception:
         return None
 
-def get_pending_jobs(limit=10):
+def get_pending_jobs(limit=500):
     """Retrieves pending jobs out of the PostgreSQL cluster store."""
     conn = get_pg_connection()
     cursor = conn.cursor()
@@ -220,6 +220,7 @@ def save_transcript_content(ticker: str, target_date: str, text: str):
     finally:
         cursor.close()
         conn.close()
+
 def scale_pipeline_runner():
     """Main pipeline loop executing across remaining elements sequential streams."""
     print("Starting production data pipeline loop automation profiles...")
