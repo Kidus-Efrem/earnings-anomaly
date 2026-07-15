@@ -2,14 +2,13 @@ import os
 import re
 import time
 import random
-import sqlite3
 import requests
 from datetime import datetime, timedelta
 from bs4 import BeautifulSoup
-import traceback  # Add this to the imports at the top of your file
+import traceback
 
-# Corrected direct relative imports from database component scripts
-from database import DB_PATH, init_db, get_pending_jobs, update_job_status, save_transcript_content
+# Core relative imports from your PostgreSQL database component script
+from postgres_db import get_pg_connection, init_pg_db
 
 FOOL_HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
@@ -28,10 +27,7 @@ TICKER_NAME_MAP = {
 SITEMAP_CACHE = {}
 
 def update_market_time_of_day(ticker: str, target_date: str, text: str):
-    """
-    Scans the introductory text segments of a transcript to deduce whether the
-    earnings release happened Before Market Open (BMO) or After Market Close (AMC).
-    """
+    """Scans introductory text to deduce Before Market Open (BMO) or After Market Close (AMC)."""
     intro_snippet = text[:2500].lower()
     time_of_day = "UNKNOWN"
 
@@ -44,14 +40,15 @@ def update_market_time_of_day(ticker: str, target_date: str, text: str):
         time_of_day = "AMC"
 
     if time_of_day != "UNKNOWN":
-        conn = sqlite3.connect(DB_PATH)
+        conn = get_pg_connection()
         cursor = conn.cursor()
         cursor.execute("""
             UPDATE earnings_calendar
-            SET time_of_day = ?
-            WHERE ticker = ? AND target_date = ?
+            SET time_of_day = %s
+            WHERE ticker = %s AND target_date = %s::DATE
         """, (time_of_day, ticker, target_date))
         conn.commit()
+        cursor.close()
         conn.close()
         print(f"    [➔] Extracted market timing constraint alignment: {time_of_day}")
 
@@ -61,7 +58,6 @@ def get_cached_sitemap(year_str: str, month_str: str) -> str:
     if cache_key in SITEMAP_CACHE:
         return SITEMAP_CACHE[cache_key]
 
-    # Corrected target structure matching exact Motley Fool production indices
     archive_url = f"https://www.fool.com/sitemap/{year_str}/{month_str}"
     print(f"    [*] Fetching sitemap catalog for {cache_key}...")
 
@@ -71,7 +67,6 @@ def get_cached_sitemap(year_str: str, month_str: str) -> str:
             SITEMAP_CACHE[cache_key] = resp.text
             return resp.text
         else:
-            # Fallback path if grouped under plural sitemaps path layout
             fallback_url = f"https://www.fool.com/sitemaps/{year_str}/{month_str}"
             resp_fb = requests.get(fallback_url, headers=FOOL_HEADERS, timeout=15)
             if resp_fb.status_code == 200 and resp_fb.text:
@@ -80,26 +75,22 @@ def get_cached_sitemap(year_str: str, month_str: str) -> str:
             print(f"    [!] Failed to pull map path index target. HTTP Status: {resp.status_code}")
     except Exception as e:
         print(f"    [!] Error caching sitemap {cache_key}: {type(e).__name__}")
-        print(traceback.format_exc())  # This will print out the exact line and cause
-
     return ""
+
 def find_url_scaled(ticker: str, target_date_str: str) -> str | None:
     """Scans cached local maps across primary and neighboring months to match valid transcripts."""
     ticker_lower = ticker.lower()
     date_obj = datetime.strptime(target_date_str, "%Y-%m-%d")
 
-    # 1. Gather the target month
     year_str = date_obj.strftime("%Y")
     month_str = date_obj.strftime("%m")
     xml_content = str(get_cached_sitemap(year_str, month_str) or "")
 
-    # 2. Gather the subsequent month (Handles delayed reporting & cross-month alignment gaps)
     next_month_obj = (date_obj.replace(day=28) + timedelta(days=5))
     next_year_str = next_month_obj.strftime("%Y")
     next_month_str = next_month_obj.strftime("%m")
     xml_content += str(get_cached_sitemap(next_year_str, next_month_str) or "")
 
-    # 3. Gather previous month if early in the month (Handles boundary adjustments)
     if date_obj.day < 7:
         prev_month_obj = date_obj - timedelta(days=10)
         prev_year_str = prev_month_obj.strftime("%Y")
@@ -112,7 +103,6 @@ def find_url_scaled(ticker: str, target_date_str: str) -> str | None:
     all_urls = re.findall(r"<loc>(.*?)</loc>", xml_content)
     candidate_urls = []
 
-    # Strict hyphen-bounded regex patterns to prevent false-positives
     strict_patterns = [
         re.compile(rf"-{ticker_lower}-q\d-20\d\d"),
         re.compile(rf"-{ticker_lower}-earnings-"),
@@ -127,7 +117,6 @@ def find_url_scaled(ticker: str, target_date_str: str) -> str | None:
                 candidate_urls.append(url)
 
     best_url = None
-    # INCREASED: Look window expanded to 45 days to capture companies with alternative fiscal calendars
     smallest_delta = timedelta(days=45)
 
     for url in candidate_urls:
@@ -142,8 +131,8 @@ def find_url_scaled(ticker: str, target_date_str: str) -> str | None:
                     best_url = url
             except ValueError:
                 continue
-
     return best_url
+
 def download_and_parse_transcript(url: str) -> str | None:
     """Downloads individual document bodies and cleans the extracted text segments."""
     try:
@@ -156,20 +145,89 @@ def download_and_parse_transcript(url: str) -> str | None:
         if content_div:
             return content_div.get_text(separator="\n", strip=True)
 
-        # Global multi-paragraph tracking fallbacks
         paragraphs = soup.find_all('p')
         return "\n".join([p.get_text() for p in paragraphs if len(p.get_text()) > 30])
     except Exception:
         return None
 
+def get_pending_jobs(limit=10):
+    """Retrieves pending jobs out of the PostgreSQL cluster store."""
+    conn = get_pg_connection()
+    cursor = conn.cursor()
+    current_date = datetime.now().date()
+
+    cursor.execute("""
+        SELECT ticker, target_date
+        FROM earnings_calendar
+        WHERE status = 'PENDING' AND target_date <= %s
+        ORDER BY target_date DESC
+        LIMIT %s;
+    """, (current_date, limit))
+
+    jobs = [{"ticker": row[0], "date": str(row[1])} for row in cursor.fetchall()]
+    cursor.close()
+    conn.close()
+    return jobs
+
+def update_job_status(ticker: str, target_date: str, status: str, url: str = None):
+    """Saves pipeline progression metrics back safely into your explicit transcript_url column."""
+    conn = get_pg_connection()
+    cursor = conn.cursor()
+
+    # REPAIRED QUERY: Uses explicitly named fields to put the URL in transcript_url instead of time_of_day
+    query = """
+        UPDATE earnings_calendar
+        SET
+            status = %(status)s,
+            transcript_url = COALESCE(%(url)s, transcript_url)
+        WHERE
+            ticker = %(ticker)s
+            AND target_date = %(target_date)s::DATE;
+    """
+    try:
+        cursor.execute(query, {
+            "status": status,
+            "url": url,
+            "ticker": ticker,
+            "target_date": target_date
+        })
+        conn.commit()
+    except Exception as e:
+        conn.rollback()
+        raise e
+    finally:
+        cursor.close()
+        conn.close()
+
+def save_transcript_content(ticker: str, target_date: str, text: str):
+    """Saves parsed transcript content directly into the transcripts_content table."""
+    conn = get_pg_connection()
+    cursor = conn.cursor()
+    try:
+        cursor.execute("""
+            INSERT INTO transcripts_content (ticker, target_date, transcript_text, char_count)
+            VALUES (%s, %s::DATE, %s, %s)
+            ON CONFLICT (ticker, target_date)
+            DO UPDATE SET
+                transcript_text = EXCLUDED.transcript_text,
+                char_count = EXCLUDED.char_count;
+        """, (ticker, target_date, text, len(text)))
+        conn.commit()
+    except Exception as e:
+        conn.rollback()
+        print(f"    [!] Failed to save transcript text to DB for {ticker}: {e}")
+        raise e
+    finally:
+        cursor.close()
+        conn.close()
 def scale_pipeline_runner():
     """Main pipeline loop executing across remaining elements sequential streams."""
     print("Starting production data pipeline loop automation profiles...")
     print("=" * 70)
 
-    init_db()
+    init_pg_db()
 
-    pending_jobs = get_pending_jobs()
+    pending_jobs = get_pending_jobs(limit=500)
     print(f"[#] Total Pending records found in catalog index ledger: {len(pending_jobs)}")
 
     for job in pending_jobs:
@@ -183,7 +241,6 @@ def scale_pipeline_runner():
 
             if url:
                 print(f"    [✓] Matched address string destination path: {url}")
-                # Throttling padding delay block directly before execution full text loads
                 time.sleep(random.uniform(1.5, 3.5))
 
                 text = download_and_parse_transcript(url)
@@ -192,7 +249,6 @@ def scale_pipeline_runner():
                     update_job_status(ticker, target_date, 'COMPLETED', url)
                     print(f"    [✓] Data block transaction stored safely. Size: {len(text)} characters.")
 
-                    # Parse text to deduce market alignment times automatically
                     update_market_time_of_day(ticker, target_date, text)
                 else:
                     update_job_status(ticker, target_date, 'FAILED_PARSING', url)
@@ -204,8 +260,8 @@ def scale_pipeline_runner():
         except Exception as global_err:
             update_job_status(ticker, target_date, 'FAILED_CRITICAL')
             print(f"    [!!] Thread execution failure on runtime item: {global_err}")
+            print(traceback.format_exc())
 
-        # Pacing step buffering delay
         time.sleep(random.uniform(0.5, 1.5))
 
 if __name__ == "__main__":
