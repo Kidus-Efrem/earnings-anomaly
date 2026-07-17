@@ -16,9 +16,14 @@ device = "cuda" if torch.cuda.is_available() else "cpu"
 print(f"Using device: {device}")
 
 # Load FinBERT Model & Tokenizer
+# We use use_safetensors=True to load the modern, secure tensor format.
+# This bypasses the CVE-2025-32434 PyTorch vulnerability check.
 print("Loading FinBERT from Hugging Face...")
 tokenizer = AutoTokenizer.from_pretrained("ProsusAI/finbert")
-model = AutoModelForSequenceClassification.from_pretrained("ProsusAI/finbert").to(device)
+model = AutoModelForSequenceClassification.from_pretrained(
+    "ProsusAI/finbert",
+    use_safetensors=True
+).to(device)
 model.eval() # Set model to evaluation mode
 
 def get_unprocessed_transcripts():
@@ -72,7 +77,7 @@ def analyze_transcript(text):
         return 0.0, 0.0, 1.0, 0.0  # Default to Neutral if empty
 
     all_probs = []
-    batch_size = 16 # Batching sentences to speed up processing
+    batch_size = 16 # Safe batch size for 4GB VRAM
 
     for i in range(0, len(sentences), batch_size):
         batch = sentences[i:i + batch_size]
@@ -81,7 +86,10 @@ def analyze_transcript(text):
         inputs = tokenizer(batch, padding=True, truncation=True, max_length=512, return_tensors="pt").to(device)
 
         with torch.no_grad():
-            outputs = model(**inputs)
+            # Use autocast to execute in FP16 (speeds up your GTX 1650 & halves VRAM usage)
+            with torch.amp.autocast(device_type="cuda" if "cuda" in device else "cpu"):
+                outputs = model(**inputs)
+
             # Apply softmax to calculate probabilities for each class (Positive, Negative, Neutral)
             probs = torch.nn.functional.softmax(outputs.logits, dim=-1).cpu().numpy()
             all_probs.extend(probs)
@@ -110,6 +118,10 @@ def main():
             print(f"    [✓] Result: Polarity = {polarity:+.4f} (Pos: {pos:.2f}, Neg: {neg:.2f})")
         except Exception as e:
             print(f"    [!] Error processing {ticker} on {target_date}: {e}")
+        finally:
+            # Clean up GPU memory pool to prevent memory leaks over long loops
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
 
 if __name__ == "__main__":
     main()
