@@ -13,10 +13,24 @@ from scraper.postgres_db import get_pg_connection
 
 # The exact same markers we are planning to use
 QA_MARKERS = [
-    r'question-and-answer session', r'questions and answers', r'question & answer session',
-    r'we will now (?:be )?taking (?:your )?questions', r'we\'ll now open the (?:line|floor) for questions',
-    r'we will now open the (?:line|floor) for questions', r'at this time, (?:we|i) will (?:open|begin) the (?:q&a|question-and-answer)',
-    r'q&a session', r'live questions and answers', r'we will now take your questions'
+    # 1. The "Golden Handoff" Phrases (Found in 100% of your Motley Fool samples)
+    r'open\s+the\s+call\s+up\s+for\s+questions',
+    r'open\s+it\s+up\s+for\s+(?:your\s+)?questions',
+    r'open\s+it\s+up\s+to\s+(?:your\s+)?questions',
+    r'open\s+the\s+line\s+for\s+questions',
+    r'let\'s\s+(?:now\s+)?go\s+to\s+questions',
+
+    # 2. Standard Operator Phrases (Fixed-width negative lookbehinds to avoid the "concludes" trap)
+    r'(?<!concludes the )question-and-answer session\b',
+    r'(?<!concludes our )question-and-answer session\b',
+    r'(?<!concludes the )q&a session\b',
+    r'(?<!concludes our )q&a session\b',
+
+    r'we\s+will\s+now\s+(?:be\s+)?taking\s+(?:your\s+)?questions\b',
+    r'we\'ll\s+now\s+open\s+the\s+(?:line|floor)\s+for\s+questions\b',
+    r'at\s+this\s+time,\s+(?:we|i)\s+will\s+(?:open|begin)\s+the\s+(?:q&a|question-and-answer)\b',
+    r'begin\s+(?:the\s+)?q&a\b',
+    r'start\s+(?:the\s+)?q&a\b'
 ]
 PATTERN = re.compile(r'(?:' + '|'.join(QA_MARKERS) + r')', re.IGNORECASE)
 
