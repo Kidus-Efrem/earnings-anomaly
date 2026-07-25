@@ -2,7 +2,7 @@ import psycopg2
 from psycopg2.extras import RealDictCursor
 import os
 
-# Updated with your actual database credentials
+# UPDATED with your actual database credentials
 DB_CONFIG = {
     "dbname": os.getenv("PGDATABASE", "transcripts_warehouse"),
     "user": os.getenv("PGUSER", "postgres"),
