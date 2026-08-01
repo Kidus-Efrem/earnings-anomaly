@@ -16,7 +16,6 @@ GS_URLS = [
     "https://www.fool.com/earnings/call-transcripts/2024/10/15/goldman-sachs-gs-q3-2024-earnings-call-transcript/",
     "https://www.fool.com/earnings/call-transcripts/2024/07/15/goldman-sachs-gs-q2-2024-earnings-call-transcript/",
     "https://www.fool.com/earnings/call-transcripts/2024/04/15/goldman-sachs-gs-q1-2024-earnings-call-transcript/",
-	"https://www.fool.com/earnings/call-transcripts/2021/04/14/goldman-sachs-group-inc-gs-q1-2021-earnings-call-t/",
 ]
 
 session = requests.Session()
