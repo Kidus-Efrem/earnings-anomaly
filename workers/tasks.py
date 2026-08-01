@@ -15,6 +15,7 @@ if project_root not in sys.path:
 
 from core.database import execute_query
 from core.schemas import JobStatus
+from scraper.base import DefaultScraper
 
 # Ensure NLTK data is available
 nltk.download('punkt', quiet=True)
@@ -142,15 +143,8 @@ def process_transcript_task(self, job_id: str, ticker: str, target_date: str, ur
     try:
         # 2. Scrape the transcript
         print(f"[Worker] Scraping {url}...")
-        headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36"}
-        response = httpx.get(url, headers=headers, timeout=30.0)
-        response.raise_for_status()
-
-        soup = BeautifulSoup(response.text, "html.parser")
-        # Remove script, style, and footer elements to clean the text
-        for element in soup(["script", "style", "footer"]):
-            element.extract()
-        raw_text = soup.get_text(separator=' ', strip=True)
+        scraper = DefaultScraper()
+        raw_text = scraper.scrape(url)
 
         # 3. Split the transcript
         prepared_text, qa_text, is_verbatim = split_transcript(raw_text)
