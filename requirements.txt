@@ -1,0 +1,38 @@
+# Core Web & API Gateway
+fastapi>=0.100.0
+uvicorn[standard]>=0.22.0
+pydantic>=2.0.0
+
+# Asynchronous Task Queue & Broker
+celery>=5.3.0
+redis>=4.6.0
+
+# Web Scraping & HTTP Clients
+httpx>=0.24.0
+beautifulsoup4>=4.12.0
+tenacity>=8.2.0
+
+# Database & Schema Migrations
+psycopg2-binary>=2.9.6
+sqlalchemy>=2.0.0
+alembic>=1.11.0
+
+# Quantitative Analysis & Data Science
+pandas>=2.0.0
+numpy>=1.24.0
+matplotlib>=3.7.0
+seaborn>=0.12.0
+yfinance>=0.2.20
+tqdm>=4.65.0
+
+# NLP & Machine Learning (FinBERT)
+torch>=2.0.0
+transformers>=4.30.0
+safetensors>=0.3.0
+nltk>=3.8.0
+
+# Interactive Dashboard
+streamlit>=1.24.0
+
+# Testing
+pytest>=7.4.0
