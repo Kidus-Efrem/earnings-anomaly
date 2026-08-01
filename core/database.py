@@ -2,18 +2,20 @@ import psycopg2
 from psycopg2.extras import RealDictCursor
 import os
 
-# UPDATED with your actual database credentials
-DB_CONFIG = {
-    "dbname": os.getenv("PGDATABASE", "transcripts_warehouse"),
-    "user": os.getenv("PGUSER", "postgres"),
-    "password": os.getenv("PGPASSWORD", "password"),
-    "host": os.getenv("PGHOST", "localhost"),
-    "port": os.getenv("PGPORT", "5432")
-}
+DATABASE_URL = os.getenv("DATABASE_URL")
 
 def get_db_connection():
-    """Returns a standard psycopg2 connection."""
-    return psycopg2.connect(**DB_CONFIG)
+    """Returns a standard psycopg2 connection, prioritizing DATABASE_URL if available."""
+    if DATABASE_URL:
+        return psycopg2.connect(DATABASE_URL)
+    
+    return psycopg2.connect(
+        dbname=os.getenv("PGDATABASE", "transcripts_warehouse"),
+        user=os.getenv("PGUSER", "postgres"),
+        password=os.getenv("PGPASSWORD", "password"),
+        host=os.getenv("PGHOST", "localhost"),
+        port=os.getenv("PGPORT", "5432")
+    )
 
 def execute_query(query, params=None, fetch=False):
     """

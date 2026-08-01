@@ -3,20 +3,16 @@ import os
 import psycopg2
 from psycopg2.extras import RealDictCursor
 
-# Update these strings with your local Postgres environment credentials
-PG_HOST = os.getenv("PGHOST", "localhost")
-PG_PORT = os.getenv("PGPORT", "5432")
-PG_USER = os.getenv("PGUSER", "postgres")
-PG_PASSWORD = os.getenv("PGPASSWORD", "password")
-PG_DATABASE = os.getenv("PGDATABASE", "transcripts_warehouse")
-
 def get_pg_connection():
+    db_url = os.getenv("DATABASE_URL")
+    if db_url:
+        return psycopg2.connect(db_url)
     return psycopg2.connect(
-        host=PG_HOST,
-        port=PG_PORT,
-        user=PG_USER,
-        password=PG_PASSWORD,
-        dbname=PG_DATABASE
+        host=os.getenv("PGHOST", "localhost"),
+        port=os.getenv("PGPORT", "5432"),
+        user=os.getenv("PGUSER", "postgres"),
+        password=os.getenv("PGPASSWORD", "password"),
+        dbname=os.getenv("PGDATABASE", "transcripts_warehouse")
     )
 
 def init_pg_db():
